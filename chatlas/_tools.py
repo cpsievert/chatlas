@@ -1,5 +1,4 @@
 import inspect
-from types import NoneType
 from typing import (
     Annotated,
     Any,
@@ -9,17 +8,17 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
-    is_typeddict,
 )
 
-from typing_extensions import Literal, Required, TypedDict
+from pydantic import BaseModel
+from typing_extensions import Literal
 
 from . import _utils
+from ._typing_extensions import Required, TypedDict, is_typeddict
 
 __all__ = ("ToolDef",)
 
 
-# TODO: support pydantic types?
 # TODO: maybe allow for specification of param type?
 class ToolDef:
     func: Callable[..., Any] | Callable[..., Awaitable[Any]]
@@ -152,7 +151,7 @@ def type_to_json_schema(
         return type_dict("number", desc)
     if t is bool:
         return type_dict("boolean", desc)
-    if t is NoneType:
+    if t is None:
         return type_dict("null", desc)
     raise ValueError(f"Unsupported type: {t}")
 
@@ -168,3 +167,47 @@ def type_dict(
         **kwargs,  # type: ignore
     }
     return res
+
+
+def basemodel_to_tool_params(
+    model: type[BaseModel],
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> ToolSchemaParams:
+    try:
+        import openai
+    except ImportError:
+        raise ImportError(
+            "The openai package is required for this functionality. "
+            "Please install it with `pip install openai`."
+        )
+
+    # Lean on openai's ability to translate BaseModel.model_json_schema()
+    # to a valid tool schema (this wouldn't be impossible to do ourselves,
+    # but it's fair amount of logic to substitute `$refs`, etc.)
+    tool = openai.pydantic_function_tool(
+        model,
+        name=name,
+        description=description,
+    )
+
+    # Translate openai's tool schema format to our own
+    fn = tool["function"]
+    params: dict[str, Any] = {}
+    if "parameters" in fn:
+        params = fn["parameters"]
+
+    properties: dict[str, ToolSchemaProperty] = {}
+    if "properties" in params:
+        properties = params["properties"]
+
+    required: list[str] = []
+    if "required" in params:
+        required = params["required"]
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }

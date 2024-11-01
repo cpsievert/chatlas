@@ -2,7 +2,9 @@ import functools
 import inspect
 import os
 import warnings
-from typing import Awaitable, Callable, ParamSpec, TypeGuard, TypeVar, cast
+from typing import Awaitable, Callable, TypeVar, cast
+
+from ._typing_extensions import ParamSpec, TypeGuard
 
 # Copied from shiny/_utils.py
 
@@ -72,6 +74,7 @@ class DefaultModelWarning(Warning):
 
 
 def inform_model_default(model: str, stacklevel: int = 3) -> str:
-    msg = f"Defaulting to `model = '{model}'`."
-    warnings.warn(msg, DefaultModelWarning, stacklevel=stacklevel)
+    if not is_testing():
+        msg = f"Defaulting to `model = '{model}'`."
+        warnings.warn(msg, DefaultModelWarning, stacklevel=stacklevel)
     return model

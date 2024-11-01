@@ -10,6 +10,8 @@ from typing import (
     overload,
 )
 
+from pydantic import BaseModel
+
 from ._tools import ToolDef
 from ._turn import Turn
 
@@ -30,6 +32,7 @@ class Provider(
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> ChatCompletionT: ...
 
@@ -41,6 +44,7 @@ class Provider(
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> Iterable[ChatCompletionChunkT]: ...
 
@@ -51,6 +55,7 @@ class Provider(
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> Iterable[ChatCompletionChunkT] | ChatCompletionT: ...
 
@@ -62,6 +67,7 @@ class Provider(
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> ChatCompletionT: ...
 
@@ -73,6 +79,7 @@ class Provider(
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> AsyncIterable[ChatCompletionChunkT]: ...
 
@@ -83,6 +90,7 @@ class Provider(
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]],
         kwargs: Any,
     ) -> AsyncIterable[ChatCompletionChunkT] | ChatCompletionT: ...
 
@@ -97,7 +105,15 @@ class Provider(
     ) -> ChatCompletionDictT: ...
 
     @abstractmethod
-    def stream_turn(self, completion: ChatCompletionDictT) -> Turn: ...
+    def stream_turn(
+        self,
+        completion: ChatCompletionDictT,
+        has_data_model: bool,
+    ) -> Turn: ...
 
     @abstractmethod
-    def value_turn(self, completion: ChatCompletionT) -> Turn: ...
+    def value_turn(
+        self,
+        completion: ChatCompletionT,
+        has_data_model: bool,
+    ) -> Turn: ...

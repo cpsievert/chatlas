@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
@@ -62,3 +63,19 @@ class ContentToolResult(Content):
         if self.error:
             return f"[tool result ({self.id})]: Error: {self.error}"
         return f"[tool result ({self.id})]: {self.value}"
+
+    def get_final_value(self) -> Any:
+        if self.error:
+            return f"Tool calling failed with error: '{self.error}'"
+        return str(self.value)
+
+
+@dataclass
+class ContentJson(Content):
+    value: dict[str, Any]
+
+    def __str__(self):
+        return f"[json]: {self.value}"
+
+    def to_json(self):
+        return json.dumps(self.value)

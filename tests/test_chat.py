@@ -2,6 +2,7 @@ import re
 
 import pytest
 from chatlas import ChatOpenAI, Turn
+from pydantic import BaseModel
 
 
 def test_simple_batch_chat():
@@ -68,6 +69,31 @@ def test_basic_print_method():
     assert "You're a helpful assistant" in out
     assert "What's 1 + 1? What's 1 + 2?" in out
     assert "2  3" in out
+
+
+def test_extract_data():
+    chat = ChatOpenAI()
+
+    class Person(BaseModel):
+        name: str
+        age: int
+
+    data = chat.extract_data("John, age 15, won first prize", data_model=Person)
+    assert data == dict(name="John", age=15)
+
+
+@pytest.mark.asyncio
+async def test_extract_data_async():
+    chat = ChatOpenAI()
+
+    class Person(BaseModel):
+        name: str
+        age: int
+
+    data = await chat.extract_data_async(
+        "John, age 15, won first prize", data_model=Person
+    )
+    assert data == dict(name="John", age=15)
 
 
 def test_last_turn_retrieval():

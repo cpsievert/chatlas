@@ -1,17 +1,22 @@
 import json
+import warnings
 from typing import TYPE_CHECKING, Literal, Optional, Union, cast, overload
+
+from pydantic import BaseModel
 
 from ._chat import Chat
 from ._content import (
     Content,
     ContentImageInline,
     ContentImageRemote,
+    ContentJson,
     ContentText,
     ContentToolRequest,
     ContentToolResult,
 )
-from ._provider import Provider, ToolDef
+from ._provider import Provider
 from ._tokens import tokens_log
+from ._tools import ToolDef, ToolSchema, basemodel_to_tool_params
 from ._turn import Turn, normalize_turns
 from ._utils import inform_model_default
 
@@ -150,6 +155,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ): ...
 
@@ -160,6 +166,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ): ...
 
@@ -169,9 +176,10 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ):
-        kwargs = self._chat_perform_args(stream, turns, tools, kwargs)
+        kwargs = self._chat_perform_args(stream, turns, tools, data_model, kwargs)
         return self._client.messages.create(**kwargs)  # type: ignore
 
     @overload
@@ -181,6 +189,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ): ...
 
@@ -191,6 +200,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ): ...
 
@@ -200,9 +210,10 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["CreateCompletionArgs"] = None,
     ):
-        kwargs = self._chat_perform_args(stream, turns, tools, kwargs)
+        kwargs = self._chat_perform_args(stream, turns, tools, data_model, kwargs)
         return await self._async_client.messages.create(**kwargs)  # type: ignore
 
     def _chat_perform_args(
@@ -210,9 +221,36 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
-        kwargs: Optional["CreateCompletionArgs"],
+        data_model: Optional[type[BaseModel]] = None,
+        kwargs: Optional["CreateCompletionArgs"] = None,
     ) -> "CreateCompletionArgs":
-        tool_schemas = [self._get_tool_schema(tool) for tool in tools.values()]
+        tool_schemas = [
+            self._anthropic_tool_schema(tool.schema) for tool in tools.values()
+        ]
+
+        # If data extraction is requested, add a "mock" tool with parameters inferred from the data model
+        data_model_tool: ToolDef | None = None
+        if data_model is not None:
+
+            def _structured_tool_call(**kwargs):
+                pass
+
+            data_model_tool = ToolDef(
+                _structured_tool_call,
+                description="Extract structured data",
+            )
+
+            data_model_tool.schema["function"]["parameters"] = basemodel_to_tool_params(
+                data_model
+            )
+
+            tool_schemas.append(self._anthropic_tool_schema(data_model_tool.schema))
+
+            if stream:
+                stream = False
+                warnings.warn(
+                    "Anthropic does not support structured data extraction in streaming mode."
+                )
 
         kwargs_full: "CreateCompletionArgs" = {
             "stream": stream,
@@ -222,6 +260,12 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
             "tools": tool_schemas,
             **(kwargs or {}),
         }
+
+        if data_model_tool:
+            kwargs_full["tool_choice"] = {
+                "type": "tool",
+                "name": data_model_tool.name,
+            }
 
         if "system" not in kwargs_full:
             if len(turns) > 0 and turns[0].role == "system":
@@ -265,11 +309,11 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
 
         return completion
 
-    def stream_turn(self, completion) -> Turn:
-        return self._as_turn(completion)
+    def stream_turn(self, completion, has_data_model) -> Turn:
+        return self._as_turn(completion, has_data_model)
 
-    def value_turn(self, completion) -> Turn:
-        return self._as_turn(completion)
+    def value_turn(self, completion, has_data_model) -> Turn:
+        return self._as_turn(completion, has_data_model)
 
     def _as_message_params(self, turns: list[Turn]) -> list["MessageParam"]:
         messages: list["MessageParam"] = []
@@ -288,6 +332,16 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
     def _as_content_block(content: Content) -> "ContentBlockParam":
         if isinstance(content, ContentText):
             return {"text": content.text, "type": "text"}
+        # TODO: we have the same problem as elmer here.
+        # See what hadley does to fix it.
+        # https://github.com/tidyverse/elmer/issues/142
+        # elif isinstance(content, ContentJson):
+        #    return {
+        #        "type": "tool_use",
+        #        "id": "_structured_tool_call",
+        #        "name": "_structured_tool_call",
+        #        "input": content.value,
+        #    }
         elif isinstance(content, ContentImageInline):
             return {
                 "type": "image",
@@ -310,20 +364,17 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
                 "input": content.arguments,
             }
         elif isinstance(content, ContentToolResult):
-            content_ = (
-                str(content.value) if content.value is not None else content.error
-            )
             return {
                 "type": "tool_result",
                 "tool_use_id": content.id,
-                "content": content_ or "",
+                "content": content.get_final_value(),
                 "is_error": content.error is not None,
             }
         raise ValueError(f"Unknown content type: {type(content)}")
 
     @staticmethod
-    def _get_tool_schema(tool: ToolDef) -> "ToolParam":
-        fn = tool.schema["function"]
+    def _anthropic_tool_schema(schema: ToolSchema) -> "ToolParam":
+        fn = schema["function"]
         name = fn["name"]
         return {
             "name": name,
@@ -334,29 +385,32 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
             },
         }
 
-    @staticmethod
-    def _as_turn(completion: Message) -> Turn:
+    def _as_turn(self, completion: Message, has_data_model=False) -> Turn:
         contents = []
         for content in completion.content:
             if content.type == "text":
                 contents.append(ContentText(content.text))
             elif content.type == "tool_use":
-                # For some reason, the type is a general object?
-                if not isinstance(content.input, dict):
-                    raise ValueError(
-                        f"Expected a dictionary of input arguments, got {type(content.input)}."
+                if has_data_model:
+                    json = ContentJson(cast(dict, content.input))
+                    contents.append(json)
+                else:
+                    # For some reason, the type is a general object?
+                    if not isinstance(content.input, dict):
+                        raise ValueError(
+                            f"Expected a dictionary of input arguments, got {type(content.input)}."
+                        )
+                    contents.append(
+                        ContentToolRequest(
+                            content.id,
+                            name=content.name,
+                            arguments=content.input,
+                        )
                     )
-                contents.append(
-                    ContentToolRequest(
-                        content.id,
-                        name=content.name,
-                        arguments=content.input,
-                    )
-                )
 
         tokens = completion.usage.input_tokens, completion.usage.output_tokens
 
-        tokens_log("Anthropic", tokens)
+        tokens_log(self, tokens)
 
         return Turn("assistant", contents, tokens=tokens)
 
@@ -426,7 +480,7 @@ def ChatBedrockAnthropic(
 
     if model is None:
         # Default model from https://github.com/anthropics/anthropic-sdk-python?tab=readme-ov-file#aws-bedrock
-        model = inform_model_default("anthropic.claude-3-sonnet-20240229-v1:0")
+        model = inform_model_default("anthropic.claude-3-5-sonnet-20241022-v2:0")
 
     return Chat(
         provider=AnthropicBedrockProvider(
@@ -456,6 +510,7 @@ class AnthropicBedrockProvider(AnthropicProvider):
         aws_region: str | None,
         aws_profile: str | None,
         aws_session_token: str | None,
+        max_tokens: int = 1024,
         base_url: str | None,
         kwargs: Optional["BedrockProviderArgs"] = None,
     ):
@@ -468,6 +523,7 @@ class AnthropicBedrockProvider(AnthropicProvider):
             )
 
         self._model = model
+        self._max_tokens = max_tokens
 
         kwargs_full: "BedrockProviderArgs" = {
             "aws_secret_key": aws_secret_key,

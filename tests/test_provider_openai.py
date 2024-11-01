@@ -2,6 +2,7 @@ import pytest
 from chatlas import ChatOpenAI
 
 from .conftest import (
+    assert_data_extraction,
     assert_images_inline,
     assert_images_remote,
     assert_tools_async,
@@ -13,7 +14,6 @@ from .conftest import (
 )
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 def test_openai_simple_request():
     chat = ChatOpenAI(
         system_prompt="Be as terse as possible; no punctuation",
@@ -24,7 +24,6 @@ def test_openai_simple_request():
     assert turn.tokens == (27, 1)
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 @pytest.mark.asyncio
 async def test_openai_simple_streaming_request():
     chat = ChatOpenAI(
@@ -36,14 +35,12 @@ async def test_openai_simple_streaming_request():
     assert "2" in "".join(res)
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 def test_openai_respects_turns_interface():
     chat_fun = ChatOpenAI
     assert_turns_system(chat_fun)
     assert_turns_existing(chat_fun)
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 def test_openai_tool_variations():
     chat_fun = ChatOpenAI
     assert_tools_simple(chat_fun)
@@ -51,13 +48,15 @@ def test_openai_tool_variations():
     assert_tools_sequential(chat_fun, total_calls=6)
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 @pytest.mark.asyncio
 async def test_openai_tool_variations_async():
     await assert_tools_async(ChatOpenAI)
 
 
-@pytest.mark.filterwarnings("ignore:Defaulting to")
+def test_data_extraction():
+    assert_data_extraction(ChatOpenAI)
+
+
 def test_openai_images():
     chat_fun = ChatOpenAI
     assert_images_inline(chat_fun)
@@ -65,7 +64,6 @@ def test_openai_images():
 
 
 @pytest.mark.asyncio
-@pytest.mark.filterwarnings("ignore:Defaulting to")
 async def test_openai_logprobs():
     chat = ChatOpenAI()
 

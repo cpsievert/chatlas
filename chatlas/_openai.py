@@ -1,18 +1,22 @@
 import json
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast, overload
 
+from pydantic import BaseModel
+
 from ._chat import Chat
 from ._content import (
     Content,
     ContentImageInline,
     ContentImageRemote,
+    ContentJson,
     ContentText,
     ContentToolRequest,
     ContentToolResult,
 )
 from ._merge import merge_dicts
-from ._provider import Provider, ToolDef
+from ._provider import Provider
 from ._tokens import tokens_log
+from ._tools import ToolDef, ToolSchema, basemodel_to_tool_params
 from ._turn import Turn, normalize_turns
 from ._utils import MISSING, MISSING_TYPE, inform_model_default, is_testing
 
@@ -93,15 +97,13 @@ def ChatOpenAI(
     Returns
     -------
     Chat
-        A Chat object.
+        A chat object that retains the state of the conversation.
 
     Examples
     --------
-    >>> chat = chat_openai()
-    >>> chat.chat('''
-    ...     What is the difference between a tibble and a data frame?
-    ...     Answer with a bulleted list
-    ... ''')
+    >>> from chatlas import ChatOpenAI
+    >>> chat = ChatOpenAI()
+    >>> chat.chat("What is the capital of France?")
 
     """
     if isinstance(seed, MISSING_TYPE):
@@ -163,6 +165,7 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ): ...
 
@@ -173,6 +176,7 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ): ...
 
@@ -182,9 +186,10 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ):
-        kwargs = self._chat_perform_args(stream, turns, tools, kwargs)
+        kwargs = self._chat_perform_args(stream, turns, tools, data_model, kwargs)
         return self._client.chat.completions.create(**kwargs)  # type: ignore
 
     @overload
@@ -194,6 +199,7 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: Literal[False],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ): ...
 
@@ -204,6 +210,7 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: Literal[True],
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ): ...
 
@@ -213,9 +220,10 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ):
-        kwargs = self._chat_perform_args(stream, turns, tools, kwargs)
+        kwargs = self._chat_perform_args(stream, turns, tools, data_model, kwargs)
         return await self._async_client.chat.completions.create(**kwargs)  # type: ignore
 
     def _chat_perform_args(
@@ -223,9 +231,12 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         stream: bool,
         turns: list[Turn],
         tools: dict[str, ToolDef],
+        data_model: Optional[type[BaseModel]] = None,
         kwargs: Optional["ChatCompletionArgs"] = None,
     ) -> "ChatCompletionArgs":
-        tool_schemas = [self._get_tool_schema(tool) for tool in tools.values()]
+        tool_schemas = [
+            self._openai_tool_schema(tool.schema) for tool in tools.values()
+        ]
         # OpenAI's typing is wrong (an empty list isn't allowed)
         # If they fix it, we can remove this if statement
         if not tool_schemas:
@@ -240,7 +251,20 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
             **(kwargs or {}),
         }
 
-        if "stream_options" not in kwargs_full:
+        if data_model is not None:
+            params = basemodel_to_tool_params(data_model)
+            params = cast(dict, params)
+            params["additionalProperties"] = False
+            kwargs_full["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_data",
+                    "schema": params,
+                    "strict": True,
+                },
+            }
+
+        if stream and "stream_options" not in kwargs_full:
             kwargs_full["stream_options"] = {"include_usage": True}
 
         return kwargs_full
@@ -256,16 +280,16 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
             return chunkd
         return merge_dicts(completion, chunkd)
 
-    def stream_turn(self, completion) -> Turn:
+    def stream_turn(self, completion, has_data_model) -> Turn:
         from openai.types.chat import ChatCompletion
 
         delta = completion["choices"][0].pop("delta")  # type: ignore
         completion["choices"][0]["message"] = delta  # type: ignore
         completion = ChatCompletion.construct(**completion)
-        return self._as_turn(completion)
+        return self._as_turn(completion, has_data_model)
 
-    def value_turn(self, completion) -> Turn:
-        return self._as_turn(completion)
+    def value_turn(self, completion, has_data_model) -> Turn:
+        return self._as_turn(completion, has_data_model)
 
     @staticmethod
     def _as_message_param(turns: list[Turn]) -> list["ChatCompletionMessageParam"]:
@@ -305,24 +329,27 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
                             f"Don't know how to handle content type {type(x)} for role='assistant'."
                         )
 
-                # OpenAI's typing is wrong (an empty list isn't allowed)
-                # If they fix it, we can remove this if statement
+                # Some OpenAI-compatible models (e.g., Groq) don't work nicely with empty content
+                args = {
+                    "role": "assistant",
+                    "content": content_parts,
+                    "tool_calls": tool_calls,
+                }
+                if not content_parts:
+                    del args["content"]
                 if not tool_calls:
-                    tool_calls = cast(list, None)
+                    del args["tool_calls"]
 
-                res.append(
-                    ChatCompletionAssistantMessageParam(
-                        content=content_parts,
-                        tool_calls=tool_calls,
-                        role="assistant",
-                    )
-                )
+                res.append(ChatCompletionAssistantMessageParam(**args))
+
             elif turn.role == "user":
                 contents: list["ChatCompletionContentPartParam"] = []
                 tool_results: list["ChatCompletionToolMessageParam"] = []
                 for x in turn.contents:
                     if isinstance(x, ContentText):
                         contents.append({"type": "text", "text": x.text})
+                    elif isinstance(x, ContentJson):
+                        contents.append({"type": "text", "text": ""})
                     elif isinstance(x, ContentImageRemote):
                         contents.append(
                             {"type": "image_url", "image_url": {"url": x.url}}
@@ -339,8 +366,8 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
                     elif isinstance(x, ContentToolResult):
                         tool_results.append(
                             ChatCompletionToolMessageParam(
-                                # TODO: a tool could return an image!
-                                content=str(x.value),
+                                # TODO: a tool could return an image!?!
+                                content=x.get_final_value(),
                                 tool_call_id=x.id,
                                 role="tool",
                             )
@@ -362,10 +389,8 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         return res
 
     @staticmethod
-    def _get_tool_schema(
-        tool: ToolDef, strict: bool = False
-    ) -> "ChatCompletionToolParam":
-        fn = tool.schema["function"]
+    def _openai_tool_schema(schema: ToolSchema) -> "ChatCompletionToolParam":
+        fn = schema["function"]
         name = fn["name"]
         return {
             "type": "function",
@@ -377,17 +402,20 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
                     "properties": fn["parameters"]["properties"],
                     "required": fn["parameters"]["required"],
                 },
-                "strict": strict,
+                "strict": True,
             },
         }
 
-    @staticmethod
-    def _as_turn(completion: "ChatCompletion") -> Turn:
+    def _as_turn(self, completion: "ChatCompletion", has_data_model: bool) -> Turn:
         message = completion.choices[0].message
 
         contents: list[Content] = []
         if message.content is not None:
-            contents = [ContentText(message.content)]
+            if has_data_model:
+                data = json.loads(message.content)
+                contents = [ContentJson(data)]
+            else:
+                contents = [ContentText(message.content)]
 
         tool_calls = message.tool_calls
 
@@ -412,7 +440,7 @@ class OpenAIProvider(Provider[ChatCompletion, ChatCompletionChunk, ChatCompletio
         else:
             tokens = usage.prompt_tokens, usage.completion_tokens
 
-        tokens_log("OpenAI", tokens)
+        tokens_log(self, tokens)
 
         return Turn(
             "assistant",
@@ -430,6 +458,7 @@ def ChatAzureOpenAI(
     api_key: Optional[str] = None,
     system_prompt: Optional[str] = None,
     turns: Optional[list[Turn]] = None,
+    seed: int | None | MISSING_TYPE = MISSING,
     kwargs: Optional["AzureProviderArgs"] = None,
 ) -> Chat["ChatCompletionArgs"]:
     """
@@ -462,6 +491,9 @@ def ChatAzureOpenAI(
         Each message in the list should be a dictionary with at least `role`
         (usually `system`, `user`, or `assistant`, but `tool` is also possible).
         Normally there is also a `content` field, which is a string.
+    seed
+        Optional integer seed that ChatGPT uses to try and make output more
+        reproducible.
     kwargs
         Additional arguments to pass to the `openai.AzureOpenAI()` client constructor.
 
@@ -469,14 +501,18 @@ def ChatAzureOpenAI(
     -------
     Chat
         A Chat object.
-
     """
+
+    if isinstance(seed, MISSING_TYPE):
+        seed = 1014 if is_testing() else None
+
     return Chat(
         provider=OpenAIAzureProvider(
             endpoint=endpoint,
             deployment_id=deployment_id,
             api_version=api_version,
             api_key=api_key,
+            seed=seed,
             kwargs=kwargs,
         ),
         turns=normalize_turns(
@@ -494,6 +530,7 @@ class OpenAIAzureProvider(OpenAIProvider):
         deployment_id: Optional[str] = None,
         api_version: Optional[str] = None,
         api_key: Optional[str] = None,
+        seed: int | None = None,
         kwargs: Optional["AzureProviderArgs"] = None,
     ):
         try:
@@ -503,6 +540,9 @@ class OpenAIAzureProvider(OpenAIProvider):
                 "`ChatAzureOpenAI()` requires the `openai` package. "
                 "Install it with `pip install openai`."
             )
+
+        self._model = deployment_id
+        self._seed = seed
 
         kwargs_full: "AzureProviderArgs" = {
             "azure_endpoint": endpoint,

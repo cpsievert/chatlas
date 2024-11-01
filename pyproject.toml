@@ -5,7 +5,8 @@ description = "A simple and consistent interface for chatting with LLMs"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "rich"
+  "rich",
+  "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -22,10 +23,7 @@ dev = [
     "shiny",
     "openai",
     "anthropic",
-    "ollama",
-    "google-generativeai",
-    "langchain",
-    "langchain-core",
+    "google-generativeai>=0.8.3",
     "numpy>1.24.4"
 ]
 
