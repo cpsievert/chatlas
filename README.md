@@ -40,6 +40,7 @@ pip install -U git+https://github.com/posit-dev/chatlas
 * Ollama local models: [`ChatOllama()`](https://posit-dev.github.io/chatlas/reference/ChatOllama.html).
 * OpenAI: [`ChatOpenAI()`](https://posit-dev.github.io/chatlas/reference/ChatOpenAI.html).
 * perplexity.ai: [`ChatPerplexity()`](https://posit-dev.github.io/chatlas/reference/ChatPerplexity.html).
+* vLLM: [`ChatVLLM()`](https://posit-dev.github.io/chatlas/reference/ChatVLLM.html).
 
 It also supports the following enterprise cloud providers:
 

@@ -13,6 +13,7 @@ from ._provider import Provider
 from ._tokens import token_usage
 from ._tools import Tool
 from ._turn import Turn
+from ._vllm import ChatVLLM
 
 __all__ = (
     "ChatAnthropic",
@@ -24,6 +25,7 @@ __all__ = (
     "ChatOpenAI",
     "ChatAzureOpenAI",
     "ChatPerplexity",
+    "ChatVLLM",
     "Chat",
     "content_image_file",
     "content_image_plot",

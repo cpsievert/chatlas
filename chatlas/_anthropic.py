@@ -286,7 +286,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         kwargs: Optional["SubmitInputArgs"] = None,
     ) -> "SubmitInputArgs":
         tool_schemas = [
-            self._anthropic_tool_schema(tool.schema) for tool in tools.values()
+            self._tool_schema_json(tool.schema) for tool in tools.values()
         ]
 
         # If data extraction is requested, add a "mock" tool with parameters inferred from the data model
@@ -306,7 +306,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
                 },
             }
 
-            tool_schemas.append(self._anthropic_tool_schema(data_model_tool.schema))
+            tool_schemas.append(self._tool_schema_json(data_model_tool.schema))
 
             if stream:
                 stream = False
@@ -430,7 +430,7 @@ class AnthropicProvider(Provider[Message, RawMessageStreamEvent, Message]):
         raise ValueError(f"Unknown content type: {type(content)}")
 
     @staticmethod
-    def _anthropic_tool_schema(schema: "ChatCompletionToolParam") -> "ToolParam":
+    def _tool_schema_json(schema: "ChatCompletionToolParam") -> "ToolParam":
         fn = schema["function"]
         name = fn["name"]
 

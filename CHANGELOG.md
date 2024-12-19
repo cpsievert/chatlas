@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### New features
 
+* Adds vLLM support via a new `ChatVLLM` class. (#24)
+
 ### Bug fixes
 
 * `ChatOllama` no longer fails when a `OPENAI_API_KEY` environment variable is not set.
